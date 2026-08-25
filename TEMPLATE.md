@@ -43,13 +43,15 @@ src/agent/
 ├── configuration.py
 ├── models.py
 ├── prompts.py
-└── tools.py
+├── tools.py
+└── persistence.py
 ```
 
 模板自身展示全部标准文件，以固定职责和命名。生成目标项目时：
 
 - `graph.py` 和 `state.py` 必须存在；
 - `configuration.py` 和 `models.py` 由整棵 Graph 树共享；
+- `persistence.py` 固定存在，并统一说明 PostgreSQL Checkpointer；
 - 没有结构化模型输出时可以不生成 `schemas.py`；
 - 没有模型 Prompt 时可以不生成 `prompts.py`；
 - 没有工具时可以不生成 `tools.py`；
@@ -95,6 +97,12 @@ Anthropic 或其他 Provider 依赖。API Key 从环境变量或部署环境读�
 使用 ToolNode；只有权限、事务、审计、服务端参数注入或特殊错误处理等业务要求
 存在时，才实现自定义工具节点。
 
+### `persistence.py`
+
+定义 Thread 内短期记忆和 PostgreSQL Checkpointer 的使用规范。直接运行统一使用
+`AsyncPostgresSaver`；Agent Server 模式由使用 PostgreSQL 的 Server 持久化层
+管理。所有运行必须提供 `thread_id`，durability 固定为 `async`。
+
 ## 5. 一个 Graph 一个 State
 
 每张 Graph 只定义一个主要 State：
@@ -106,14 +114,21 @@ class State(TypedDict, total=False):
 
 同一张 Graph 的所有节点读写这个 State，各节点只使用自己负责的字段。
 
+State 保存可序列化的原始业务数据，不保存已经拼接好的 Prompt。Prompt 在节点
+调用模型前根据原始 State 临时格式化。
+
 不能放入 State 的内容：
 
 - 模型名称、并发数和循环上限；
 - API Key 和其他秘密；
+- 模型、数据库连接、HTTP Client、文件句柄和锁；
 - 只在一次函数调用中使用的局部变量；
 - 被当前节点立即消费的临时路由结果。
 
 并行节点共同写入同一字段时，必须根据业务合并方式声明 Reducer。
+
+调用外部副作用的流程必须在 State 中保存稳定的业务幂等 ID 和执行结果。每个
+业务循环必须保存自己的迭代次数和完成状态，不能只依赖 `recursion_limit`。
 
 如果确实需要限制 Graph 对外输入或 Subgraph 输出，可以按需创建
 `contracts.py`；普通节点之间仍然只使用 State。模板自身不包含该文件。
@@ -183,6 +198,12 @@ Node 名称：research
 
 多步骤且拥有独立 State 的并发 Agent
 → Subgraph
+
+需要暂停并等待用户输入
+→ interrupt + Command(resume=...)
+
+瞬时网络或模型错误
+→ RetryPolicy
 ```
 
 本模板不使用 Conditional Edge。动态路由统一由产生决策的节点返回 Command，
@@ -211,7 +232,97 @@ Configuration 只描述参数，模型实例化只放在 `models.py`。不能把
 模板保持模型厂商中立。Codex 必须根据目标项目选择 Provider，并只添加实际使用
 的依赖。
 
-## 10. 生成目标项目
+## 10. PostgreSQL 短期记忆
+
+模板只支持单个 Thread 内的短期记忆，不使用跨 Thread Store。
+
+### Agent Server 模式
+
+根 Graph 直接编译并导出：
+
+```python
+graph = graph_builder.compile()
+```
+
+源码中不重复创建 Checkpointer。部署或 Agent Server 必须使用 PostgreSQL 持久化
+层，不能依赖进程内存。
+
+### 直接运行模式
+
+统一使用 `AsyncPostgresSaver`：
+
+```python
+async with AsyncPostgresSaver.from_conn_string(DATABASE_URL) as checkpointer:
+    await checkpointer.setup()
+    graph = graph_builder.compile(checkpointer=checkpointer)
+```
+
+Graph 的调用必须发生在 Checkpointer 的异步生命周期内。`setup()` 用于创建或
+迁移 Checkpoint 表；生产部署应把迁移作为明确的启动或发布步骤。
+
+每次运行必须提供稳定的 Thread ID：
+
+```python
+config = {
+    "configurable": {"thread_id": thread_id},
+    "recursion_limit": 100,
+}
+```
+
+`thread_id` 使用 UUID 或短业务 ID，长度不得超过 255。调用统一指定：
+
+```python
+await graph.ainvoke(
+    inputs,
+    config=config,
+    durability="async",
+)
+```
+
+不提供 InMemory、SQLite、Store 或 State 加密分支。生产环境必须定义 Thread 和
+Checkpoint 的保留、归档及删除策略。
+
+## 11. Interrupt 和副作用
+
+需要人工审批或补充信息时，在业务节点中调用 `interrupt()`，并通过同一个
+`thread_id` 使用 `Command(resume=...)` 恢复。
+
+`interrupt()` 之前不能执行不可重复的外部副作用，因为节点恢复时会从开头重新
+执行。付款、发信、删除和数据库写入必须放在审批后的独立节点，并使用业务幂等
+ID 防止重复执行。
+
+## 12. 错误、重试和循环
+
+- 网络查询、只读 API 和模型调用可以配置 `RetryPolicy`；
+- 有副作用节点只有实现幂等后才能重试；
+- 模型可修复的工具错误写回 State，再用 Command 返回模型节点；
+- 用户可修复的问题使用 `interrupt()`；
+- 未知异常直接抛出，不能用宽泛捕获隐藏；
+- 每个循环使用业务计数控制退出，`recursion_limit` 只作为最后保护。
+
+## 13. 上下文压缩
+
+长会话需要压缩时，按业务创建普通 `compress_messages` 节点。State 保存原始消息
+和摘要；压缩节点生成摘要、缩减旧消息，再通过 Command 回到业务流程。空白模板
+不预建压缩节点。
+
+## 14. Streaming 和调试
+
+需要流式输出时，统一使用异步 Graph API，并同时观察 `messages` 和 `updates`；
+存在 Subgraph 时开启 `subgraphs=True`。调用仍固定使用 `durability="async"`。
+
+生成项目应能使用：
+
+```text
+graph.get_state(config)
+graph.get_state_history(config)
+graph.update_state(config, values)
+```
+
+用于检查当前 State、历史 Checkpoint、修正 State 和从旧 Checkpoint 创建新执行
+分支。
+
+## 15. 生成目标项目
 
 Codex 完成业务设计并获得用户确认后：
 
@@ -222,12 +333,15 @@ Codex 完成业务设计并获得用户确认后：
 5. 生成真实 `langgraph.json`，Graph ID 和导出路径必须对应源码；
 6. 确保目录层级、Graph 层级和节点命名一致。
 
-## 11. 第一版明确不包含
+## 16. 第一版明确不包含
 
 - 具体业务逻辑；
 - 具体模型或工具厂商；
 - 测试目录和测试规范；
 - AGENTS.md、README.md 和 docs 目录；
-- 鉴权、数据库、队列、限流和监控实现；
+- 鉴权、业务数据库、队列、限流和监控实现；
 - 通用基类、抽象 Graph、插件注册中心和代码生成引擎；
 - Conditional Edge。
+- LangChain `create_agent`、AgentMiddleware 和 Deep Agents；
+- Store、跨 Thread 长期记忆、InMemorySaver 和 SQLiteSaver；
+- State 加密、自定义 Checkpointer 和 DeltaChannel。
