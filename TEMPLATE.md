@@ -41,7 +41,10 @@
 ├── langgraph.json
 ├── .env.example
 ├── .gitignore
+├── .editorconfig
 ├── compose.yaml
+├── scripts/
+│   └── setup.ps1
 └── src/agent/
     ├── __init__.py
     ├── graph.py
@@ -60,10 +63,13 @@ Template 的通用基础设施是可以直接复用的真实代码：
 ```text
 state.py
 configuration.py
+models.py
 persistence.py
 compression.py
 .gitignore
+.editorconfig
 compose.yaml
+scripts/setup.ps1
 ```
 
 其他文件保留固定职责和命名，由 Codex 根据业务生成。生成目标项目时：
@@ -104,13 +110,18 @@ conversation_summary
 
 ### `configuration.py`
 
-提供 `recursion_limit`、压缩阈值、保留消息数量和重试次数的真实配置类。具体
-项目继续增加业务参数；durability 固定为 `async`，不做成配置字段。
+提供默认 DeepSeek 模型、压缩模型、超时、重试、`recursion_limit`、压缩阈值和
+保留消息数量的真实配置类。具体项目继续增加业务参数；durability 固定为
+`async`，不做成配置字段。
 
 ### `models.py`
 
-根据 Configuration 创建模型实例。模板保持厂商中立，由目标项目添加 OpenAI、
-Anthropic 或其他 Provider 依赖。API Key 从环境变量或部署环境读取。
+使用 `langchain-deepseek` 创建默认业务模型和压缩模型，对其他模块统一返回
+`BaseChatModel`。默认模型为 `deepseek-v4-flash`，API Key 从
+`DEEPSEEK_API_KEY` 读取。
+
+Graph、State 和 Compression 不能直接导入 `ChatDeepSeek`。以后更换模型时由
+开发者修改 `models.py` 和依赖，Codex 不自动检查或替换模型兼容性。
 
 ### `prompts.py`
 
@@ -260,10 +271,12 @@ Node 名称：research
 Configuration 只描述参数，模型实例化只放在 `models.py`。不能把模型工厂写进
 `configuration.py`。
 
-模板保持模型厂商中立。Codex 必须根据目标项目选择 Provider，并只添加实际使用
-的依赖。
+Template 默认使用 DeepSeek 官方 API 和 `deepseek-v4-flash`。具体项目没有收到
+明确要求时沿用这个默认值；模型切换由开发者自行决定，不属于 Codex 的自动检查
+范围。
 
 DATABASE_URL 不进入 Configuration，由 `persistence.py` 从环境变量读取。
+DEEPSEEK_API_KEY 不进入 Configuration，由 `models.py` 从环境变量读取。
 
 ## 10. PostgreSQL 短期记忆
 
@@ -374,22 +387,35 @@ graph.update_state(config, values)
 ## 16. 本地 PostgreSQL
 
 Template 提供 `compose.yaml`，统一使用 PostgreSQL 16、Healthcheck 和持久化
-Volume。本地开发先复制 `.env.example`，再运行：
+Volume。Windows 本地开发运行：
 
-```text
-docker compose up -d postgres
+```powershell
+.\scripts\setup.ps1
 ```
 
-`.gitignore` 必须排除 `.env`、虚拟环境、Python 缓存和 Agent Server 本地数据。
+脚本在 `.env` 不存在时复制 `.env.example`，检查 Docker，启动并等待 PostgreSQL，
+执行 `uv sync` 和 `agent-db-setup`。开始调用模型前仍需填写
+`DEEPSEEK_API_KEY`。
+
+`.gitignore` 排除 `.env`、虚拟环境、Python 缓存和 Agent Server 本地数据；
+`.editorconfig` 固定 UTF-8、LF、末尾换行和 Python 四空格缩进。
+
+代码生成或修改完成后统一执行：
+
+```powershell
+uv run ruff format .
+uv run ruff check .
+```
 
 ## 17. 生成目标项目
 
 Codex 完成业务设计并获得用户确认后：
 
 1. 在用户指定的新目录创建项目；
-2. 复用 State、Configuration、Persistence、Compression 和本地 PostgreSQL 基础；
+2. 复用 State、Configuration、默认 DeepSeek Models、Persistence、Compression
+   和本地 PostgreSQL 基础；
 3. 只创建业务实际使用的其他文件和 Subgraph；
-4. 生成真实 `pyproject.toml` 和 Provider 依赖；
+4. 没有明确换模要求时保留默认 DeepSeek 依赖；
 5. 生成真实 `.env.example`，但不写入生产密钥；
 6. 生成真实 `langgraph.json`，Graph ID 和导出路径必须对应源码；
 7. 确保目录层级、Graph 层级和节点命名一致。
@@ -397,7 +423,7 @@ Codex 完成业务设计并获得用户确认后：
 ## 18. 第一版明确不包含
 
 - 具体业务逻辑；
-- 具体模型或工具厂商；
+- 具体工具厂商；
 - 测试目录和测试规范；
 - AGENTS.md、README.md 和 docs 目录；
 - 鉴权、业务数据库、队列、限流和监控实现；

@@ -1,9 +1,11 @@
 """提供 Thread 内短期记忆使用的 PostgreSQL Checkpointer。"""
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -13,6 +15,7 @@ MAX_THREAD_ID_LENGTH = 255
 
 def get_database_url() -> str:
     """读取 PostgreSQL 地址，并在缺失时给出明确错误。"""
+    load_dotenv()
     database_url = os.getenv(DATABASE_URL_ENV, "").strip()
     if not database_url:
         msg = f"缺少环境变量 {DATABASE_URL_ENV}，无法创建 PostgreSQL Checkpointer。"
@@ -54,3 +57,12 @@ def create_thread_config(
         "configurable": {"thread_id": normalized_thread_id},
         "recursion_limit": recursion_limit,
     }
+
+
+def main() -> None:
+    """执行 PostgreSQL Checkpoint 数据库初始化。"""
+    asyncio.run(setup_checkpoint_database())
+
+
+if __name__ == "__main__":
+    main()
