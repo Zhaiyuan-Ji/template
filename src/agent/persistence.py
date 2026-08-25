@@ -1,10 +1,56 @@
-"""定义 Thread 内短期记忆使用的 PostgreSQL Checkpointer 规范。
+"""提供 Thread 内短期记忆使用的 PostgreSQL Checkpointer。"""
 
-生成的项目统一使用 AsyncPostgresSaver，并从 DATABASE_URL 读取连接地址。直接运行
-Graph 时，应在异步上下文中创建 Checkpointer、执行一次 setup() 迁移，并在同一
-生命周期内编译和调用 Graph。通过 Agent Server 运行时，不在源码中重复创建
-Checkpointer，而是由使用 PostgreSQL 的 Server 持久化层管理。
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-所有运行都必须提供稳定的 thread_id，并固定使用 durability="async"。本文件不
-提供 Store、跨 Thread 长期记忆、InMemory、SQLite 或 State 加密实现。
-"""
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+DATABASE_URL_ENV = "DATABASE_URL"
+MAX_THREAD_ID_LENGTH = 255
+
+
+def get_database_url() -> str:
+    """读取 PostgreSQL 地址，并在缺失时给出明确错误。"""
+    database_url = os.getenv(DATABASE_URL_ENV, "").strip()
+    if not database_url:
+        msg = f"缺少环境变量 {DATABASE_URL_ENV}，无法创建 PostgreSQL Checkpointer。"
+        raise RuntimeError(msg)
+    return database_url
+
+
+async def setup_checkpoint_database() -> None:
+    """创建或升级 LangGraph Checkpoint 表。"""
+    async with AsyncPostgresSaver.from_conn_string(get_database_url()) as checkpointer:
+        await checkpointer.setup()
+
+
+@asynccontextmanager
+async def open_checkpointer() -> AsyncIterator[AsyncPostgresSaver]:
+    """在一个明确的异步生命周期内提供 PostgreSQL Checkpointer。"""
+    async with AsyncPostgresSaver.from_conn_string(get_database_url()) as checkpointer:
+        yield checkpointer
+
+
+def create_thread_config(
+    thread_id: str,
+    *,
+    recursion_limit: int,
+) -> RunnableConfig:
+    """创建 Checkpoint 运行配置并校验 Thread 标识。"""
+    normalized_thread_id = thread_id.strip()
+    if not normalized_thread_id:
+        msg = "thread_id 不能为空。"
+        raise ValueError(msg)
+    if len(normalized_thread_id) > MAX_THREAD_ID_LENGTH:
+        msg = f"thread_id 长度不能超过 {MAX_THREAD_ID_LENGTH}。"
+        raise ValueError(msg)
+    if recursion_limit < 1:
+        msg = "recursion_limit 必须大于 0。"
+        raise ValueError(msg)
+
+    return {
+        "configurable": {"thread_id": normalized_thread_id},
+        "recursion_limit": recursion_limit,
+    }

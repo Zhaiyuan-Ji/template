@@ -35,23 +35,43 @@
 ## 3. 目标项目的基础结构
 
 ```text
-src/agent/
-├── __init__.py
-├── graph.py
-├── state.py
-├── schemas.py
-├── configuration.py
-├── models.py
-├── prompts.py
-├── tools.py
-└── persistence.py
+<project>/
+├── TEMPLATE.md
+├── pyproject.toml
+├── langgraph.json
+├── .env.example
+├── .gitignore
+├── compose.yaml
+└── src/agent/
+    ├── __init__.py
+    ├── graph.py
+    ├── state.py
+    ├── schemas.py
+    ├── configuration.py
+    ├── models.py
+    ├── prompts.py
+    ├── tools.py
+    ├── persistence.py
+    └── compression.py
 ```
 
-模板自身展示全部标准文件，以固定职责和命名。生成目标项目时：
+Template 的通用基础设施是可以直接复用的真实代码：
+
+```text
+state.py
+configuration.py
+persistence.py
+compression.py
+.gitignore
+compose.yaml
+```
+
+其他文件保留固定职责和命名，由 Codex 根据业务生成。生成目标项目时：
 
 - `graph.py` 和 `state.py` 必须存在；
 - `configuration.py` 和 `models.py` 由整棵 Graph 树共享；
 - `persistence.py` 固定存在，并统一说明 PostgreSQL Checkpointer；
+- `compression.py` 固定存在，具体项目只包装同名压缩 Node；
 - 没有结构化模型输出时可以不生成 `schemas.py`；
 - 没有模型 Prompt 时可以不生成 `prompts.py`；
 - 没有工具时可以不生成 `tools.py`；
@@ -66,8 +86,14 @@ src/agent/
 
 ### `state.py`
 
-定义当前 Graph 唯一的运行 State。State 只保存需要跨节点、跨循环或恢复执行的
-动态业务数据。
+提供所有项目统一继承的最低 State：
+
+```text
+messages
+conversation_summary
+```
+
+具体项目只在同一个 `State` 中增加真实业务字段。
 
 不要在 `state.py` 中定义模型结构化输出，也不要默认给每个节点创建 State。
 
@@ -78,8 +104,8 @@ src/agent/
 
 ### `configuration.py`
 
-只定义 Runtime Context，例如功能开关、并发上限、循环上限和模型名称。配置值
-应当具有明确默认值和有效范围。
+提供 `recursion_limit`、压缩阈值、保留消息数量和重试次数的真实配置类。具体
+项目继续增加业务参数；durability 固定为 `async`，不做成配置字段。
 
 ### `models.py`
 
@@ -99,17 +125,22 @@ Anthropic 或其他 Provider 依赖。API Key 从环境变量或部署环境读�
 
 ### `persistence.py`
 
-定义 Thread 内短期记忆和 PostgreSQL Checkpointer 的使用规范。直接运行统一使用
-`AsyncPostgresSaver`；Agent Server 模式由使用 PostgreSQL 的 Server 持久化层
-管理。所有运行必须提供 `thread_id`，durability 固定为 `async`。
+提供 `AsyncPostgresSaver` 数据库迁移、异步生命周期、`DATABASE_URL` 读取和
+Thread Config 校验的真实实现。Agent Server 模式仍由使用 PostgreSQL 的 Server
+持久化层管理。
+
+### `compression.py`
+
+提供厂商中立的 Token 估算、压缩触发判断、滚动摘要、最近消息保留和 State 更新
+函数。具体项目在 `graph.py` 中定义业务 Node，并调用这些通用函数。
 
 ## 5. 一个 Graph 一个 State
 
-每张 Graph 只定义一个主要 State：
+每张 Graph 只定义一个主要 State。根 State 已提供：
 
 ```python
-class State(TypedDict, total=False):
-    ...
+class State(MessagesState, total=False):
+    conversation_summary: str
 ```
 
 同一张 Graph 的所有节点读写这个 State，各节点只使用自己负责的字段。
@@ -232,6 +263,8 @@ Configuration 只描述参数，模型实例化只放在 `models.py`。不能把
 模板保持模型厂商中立。Codex 必须根据目标项目选择 Provider，并只添加实际使用
 的依赖。
 
+DATABASE_URL 不进入 Configuration，由 `persistence.py` 从环境变量读取。
+
 ## 10. PostgreSQL 短期记忆
 
 模板只支持单个 Thread 内的短期记忆，不使用跨 Thread Store。
@@ -302,11 +335,27 @@ ID 防止重复执行。
 
 ## 13. 上下文压缩
 
-长会话需要压缩时，按业务创建普通 `compress_messages` 节点。State 保存原始消息
-和摘要；压缩节点生成摘要、缩减旧消息，再通过 Command 回到业务流程。空白模板
-不预建压缩节点。
+Template 已提供通用压缩函数，但不预建假业务 Node。具体项目定义：
 
-## 14. Streaming 和调试
+```python
+async def compress_messages(...):
+    ...
+```
+
+这个 Node 调用 `compression.compress_context()`，再通过 Command 回到真实业务
+流程。压缩只能发生在消息历史完整的安全边界，不能切断 AI Tool Call 和对应的
+ToolMessage。
+
+## 14. Tool 和业务服务边界
+
+`tools.py` 中的模型工具只负责参数入口和结果返回。权限、事务、幂等、业务数据库
+和外部 API 编排放在具体项目按需创建的 `services/` 中。Template 不预建空
+`services/` 目录。
+
+小 Graph 可以把节点函数和 Builder 都放在 `graph.py`。节点较多或文件明显难以
+连续阅读时，才在当前 Graph 目录按需创建 `nodes.py`，不能建立全局 Node 仓库。
+
+## 15. Streaming 和调试
 
 需要流式输出时，统一使用异步 Graph API，并同时观察 `messages` 和 `updates`；
 存在 Subgraph 时开启 `subgraphs=True`。调用仍固定使用 `durability="async"`。
@@ -322,18 +371,30 @@ graph.update_state(config, values)
 用于检查当前 State、历史 Checkpoint、修正 State 和从旧 Checkpoint 创建新执行
 分支。
 
-## 15. 生成目标项目
+## 16. 本地 PostgreSQL
+
+Template 提供 `compose.yaml`，统一使用 PostgreSQL 16、Healthcheck 和持久化
+Volume。本地开发先复制 `.env.example`，再运行：
+
+```text
+docker compose up -d postgres
+```
+
+`.gitignore` 必须排除 `.env`、虚拟环境、Python 缓存和 Agent Server 本地数据。
+
+## 17. 生成目标项目
 
 Codex 完成业务设计并获得用户确认后：
 
 1. 在用户指定的新目录创建项目；
-2. 只创建业务实际使用的文件和 Subgraph；
-3. 生成真实 `pyproject.toml` 和 Provider 依赖；
-4. 生成真实 `.env.example`，但不写入任何密钥；
-5. 生成真实 `langgraph.json`，Graph ID 和导出路径必须对应源码；
-6. 确保目录层级、Graph 层级和节点命名一致。
+2. 复用 State、Configuration、Persistence、Compression 和本地 PostgreSQL 基础；
+3. 只创建业务实际使用的其他文件和 Subgraph；
+4. 生成真实 `pyproject.toml` 和 Provider 依赖；
+5. 生成真实 `.env.example`，但不写入生产密钥；
+6. 生成真实 `langgraph.json`，Graph ID 和导出路径必须对应源码；
+7. 确保目录层级、Graph 层级和节点命名一致。
 
-## 16. 第一版明确不包含
+## 18. 第一版明确不包含
 
 - 具体业务逻辑；
 - 具体模型或工具厂商；

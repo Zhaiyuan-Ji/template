@@ -1,8 +1,26 @@
-"""定义整棵 Graph 树共享的 Runtime Context。
+"""定义整棵 Graph 树共享的通用运行参数。"""
 
-这里只描述功能开关、并发限制、循环上限和模型名称等运行参数，并提供明确默认值
-和有效范围。生成项目时应为业务循环提供明确上限，并设置 recursion_limit 作为
-最后保护；durability 不作为可变配置，统一固定为 async。
+from dataclasses import dataclass
 
-不要在这里创建模型、数据库连接、Checkpointer，读取业务 State 或保存 API Key。
-"""
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Configuration:
+    """提供所有目标项目一致的安全默认值。"""
+
+    recursion_limit: int = 100
+    compression_trigger_tokens: int = 12_000
+    compression_keep_messages: int = 12
+    max_retry_attempts: int = 3
+
+    def __post_init__(self) -> None:
+        """拒绝会让循环、压缩或重试失去边界的配置。"""
+        positive_values = {
+            "recursion_limit": self.recursion_limit,
+            "compression_trigger_tokens": self.compression_trigger_tokens,
+            "compression_keep_messages": self.compression_keep_messages,
+            "max_retry_attempts": self.max_retry_attempts,
+        }
+        for name, value in positive_values.items():
+            if value < 1:
+                msg = f"{name} 必须大于 0，当前值为 {value}。"
+                raise ValueError(msg)

@@ -1,9 +1,13 @@
-"""定义根 Graph 唯一的运行 State。
+"""定义所有目标项目共享的最低 State 约定。"""
 
-State 只保存需要跨节点、跨循环或恢复执行的动态业务数据。不要在这里保存运行
-配置、密钥、连接对象、局部变量或模型结构化输出。字段应保存可序列化的原始业务
-数据，不保存格式化 Prompt；并行写入字段需要声明符合业务语义的 Reducer。
+from langgraph.graph import MessagesState
 
-包含外部副作用的流程应保存稳定的业务幂等 ID 和执行结果。每个业务循环应保存
-自己的迭代次数和完成状态，不能只依赖全局 recursion_limit。
-"""
+
+class State(MessagesState, total=False):
+    """保存 Thread 内消息和滚动上下文摘要。
+
+    具体项目在这个 State 中继续增加真实业务字段。State 只保存可序列化的原始
+    业务数据，不保存配置、密钥、连接对象、模型实例或格式化 Prompt。
+    """
+
+    conversation_summary: str
