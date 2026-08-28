@@ -13,37 +13,9 @@ if (-not $DeepSeekKeyConfigured) {
     Write-Warning ".env 尚未填写 DEEPSEEK_API_KEY；数据库可以初始化，但模型调用会失败。"
 }
 
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw "未找到 Docker。请先安装并启动 Docker Desktop。"
-}
-
-docker info *> $null
-if ($LASTEXITCODE -ne 0) {
-    throw "Docker Engine 未运行。请先启动 Docker Desktop。"
-}
-
-docker compose up -d postgres
-if ($LASTEXITCODE -ne 0) {
-    throw "PostgreSQL 容器启动失败。"
-}
-
-$ContainerId = docker compose ps -q postgres
-if (-not $ContainerId) {
-    throw "没有找到 PostgreSQL 容器。"
-}
-
-$Healthy = $false
-for ($Attempt = 1; $Attempt -le 30; $Attempt++) {
-    $Status = docker inspect --format "{{.State.Health.Status}}" $ContainerId
-    if ($Status -eq "healthy") {
-        $Healthy = $true
-        break
-    }
-    Start-Sleep -Seconds 2
-}
-
-if (-not $Healthy) {
-    throw "PostgreSQL 在 60 秒内没有进入 healthy 状态。"
+$DatabaseUrlConfigured = Select-String -LiteralPath ".env" -Pattern "^DATABASE_URL=.+" -Quiet
+if (-not $DatabaseUrlConfigured) {
+    throw ".env 缺少 DATABASE_URL，无法初始化 PostgreSQL Checkpoint。"
 }
 
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
@@ -57,7 +29,7 @@ if ($LASTEXITCODE -ne 0) {
 
 uv run agent-db-setup
 if ($LASTEXITCODE -ne 0) {
-    throw "LangGraph Checkpoint 数据库初始化失败。"
+    throw "LangGraph Checkpoint 数据库初始化失败。请根据上方错误检查 DATABASE_URL、数据库状态和连接权限。"
 }
 
-Write-Host "Template 基础环境初始化完成。"
+Write-Host "项目依赖和 PostgreSQL Checkpoint 初始化完成。"

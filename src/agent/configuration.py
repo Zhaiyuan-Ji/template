@@ -11,13 +11,10 @@ class Configuration:
     """提供所有目标项目一致的安全默认值。"""
 
     model_name: str = "deepseek-v4-flash"
-    compression_model_name: str = "deepseek-v4-flash"
     model_temperature: float = 0.0
     model_timeout_seconds: float = 60.0
     model_max_retries: int = 2
     recursion_limit: int = 100
-    compression_trigger_tokens: int = 12_000
-    compression_keep_messages: int = 12
     max_retry_attempts: int = 3
 
     @classmethod
@@ -27,20 +24,14 @@ class Configuration:
         defaults = cls()
         return cls(
             model_name=os.getenv("MODEL_NAME", defaults.model_name),
-            compression_model_name=os.getenv(
-                "COMPRESSION_MODEL_NAME",
-                defaults.compression_model_name,
-            ),
         )
 
     def __post_init__(self) -> None:
-        """拒绝会让循环、压缩或重试失去边界的配置。"""
+        """拒绝会让模型调用、循环或重试失去边界的配置。"""
         positive_values = {
             "model_timeout_seconds": self.model_timeout_seconds,
             "model_max_retries": self.model_max_retries,
             "recursion_limit": self.recursion_limit,
-            "compression_trigger_tokens": self.compression_trigger_tokens,
-            "compression_keep_messages": self.compression_keep_messages,
             "max_retry_attempts": self.max_retry_attempts,
         }
         for name, value in positive_values.items():
@@ -48,10 +39,7 @@ class Configuration:
                 msg = f"{name} 必须大于 0，当前值为 {value}。"
                 raise ValueError(msg)
 
-        for name, value in {
-            "model_name": self.model_name,
-            "compression_model_name": self.compression_model_name,
-        }.items():
+        for name, value in {"model_name": self.model_name}.items():
             if not value.strip():
                 msg = f"{name} 不能为空。"
                 raise ValueError(msg)

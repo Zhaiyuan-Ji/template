@@ -36,11 +36,3 @@ def _create_deepseek_model(
 def create_model(configuration: Configuration) -> BaseChatModel:
     """创建默认业务模型。"""
     return _create_deepseek_model(configuration.model_name, configuration)
-
-
-def create_compression_model(configuration: Configuration) -> BaseChatModel:
-    """创建上下文压缩模型。"""
-    return _create_deepseek_model(
-        configuration.compression_model_name,
-        configuration,
-    )

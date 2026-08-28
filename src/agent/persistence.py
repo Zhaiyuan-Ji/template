@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -61,6 +62,10 @@ def create_thread_config(
 
 def main() -> None:
     """执行 PostgreSQL Checkpoint 数据库初始化。"""
+    if sys.platform == "win32":
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            runner.run(setup_checkpoint_database())
+        return
     asyncio.run(setup_checkpoint_database())
 
 

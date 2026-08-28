@@ -42,7 +42,6 @@
 ├── .env.example
 ├── .gitignore
 ├── .editorconfig
-├── compose.yaml
 ├── scripts/
 │   └── setup.ps1
 └── src/agent/
@@ -54,8 +53,7 @@
     ├── models.py
     ├── prompts.py
     ├── tools.py
-    ├── persistence.py
-    └── compression.py
+    └── persistence.py
 ```
 
 Template 的通用基础设施是可以直接复用的真实代码：
@@ -65,10 +63,8 @@ state.py
 configuration.py
 models.py
 persistence.py
-compression.py
 .gitignore
 .editorconfig
-compose.yaml
 scripts/setup.ps1
 ```
 
@@ -77,7 +73,6 @@ scripts/setup.ps1
 - `graph.py` 和 `state.py` 必须存在；
 - `configuration.py` 和 `models.py` 由整棵 Graph 树共享；
 - `persistence.py` 固定存在，并统一说明 PostgreSQL Checkpointer；
-- `compression.py` 固定存在，具体项目只包装同名压缩 Node；
 - 没有结构化模型输出时可以不生成 `schemas.py`；
 - 没有模型 Prompt 时可以不生成 `prompts.py`；
 - 没有工具时可以不生成 `tools.py`；
@@ -96,7 +91,6 @@ scripts/setup.ps1
 
 ```text
 messages
-conversation_summary
 ```
 
 具体项目只在同一个 `State` 中增加真实业务字段。
@@ -110,18 +104,16 @@ conversation_summary
 
 ### `configuration.py`
 
-提供默认 DeepSeek 模型、压缩模型、超时、重试、`recursion_limit`、压缩阈值和
-保留消息数量的真实配置类。具体项目继续增加业务参数；durability 固定为
-`async`，不做成配置字段。
+提供默认 DeepSeek 模型、超时、重试和 `recursion_limit` 的真实配置类。具体项目
+继续增加业务参数；durability 固定为 `async`，不做成配置字段。
 
 ### `models.py`
 
-使用 `langchain-deepseek` 创建默认业务模型和压缩模型，对其他模块统一返回
-`BaseChatModel`。默认模型为 `deepseek-v4-flash`，API Key 从
-`DEEPSEEK_API_KEY` 读取。
+使用 `langchain-deepseek` 创建默认业务模型，对其他模块统一返回 `BaseChatModel`。
+默认模型为 `deepseek-v4-flash`，API Key 从 `DEEPSEEK_API_KEY` 读取。
 
-Graph、State 和 Compression 不能直接导入 `ChatDeepSeek`。以后更换模型时由
-开发者修改 `models.py` 和依赖，Codex 不自动检查或替换模型兼容性。
+Graph 和 State 不能直接导入 `ChatDeepSeek`。以后更换模型时由开发者修改
+`models.py` 和依赖，Codex 不自动检查或替换模型兼容性。
 
 ### `prompts.py`
 
@@ -140,18 +132,13 @@ Graph、State 和 Compression 不能直接导入 `ChatDeepSeek`。以后更换�
 Thread Config 校验的真实实现。Agent Server 模式仍由使用 PostgreSQL 的 Server
 持久化层管理。
 
-### `compression.py`
-
-提供厂商中立的 Token 估算、压缩触发判断、滚动摘要、最近消息保留和 State 更新
-函数。具体项目在 `graph.py` 中定义业务 Node，并调用这些通用函数。
-
 ## 5. 一个 Graph 一个 State
 
 每张 Graph 只定义一个主要 State。根 State 已提供：
 
 ```python
 class State(MessagesState, total=False):
-    conversation_summary: str
+    pass
 ```
 
 同一张 Graph 的所有节点读写这个 State，各节点只使用自己负责的字段。
@@ -194,7 +181,6 @@ clarify_with_user
 write_research_brief
 generate_final_report
 execute_research_tools
-compress_research_results
 ```
 
 禁止使用：
@@ -346,20 +332,7 @@ ID 防止重复执行。
 - 未知异常直接抛出，不能用宽泛捕获隐藏；
 - 每个循环使用业务计数控制退出，`recursion_limit` 只作为最后保护。
 
-## 13. 上下文压缩
-
-Template 已提供通用压缩函数，但不预建假业务 Node。具体项目定义：
-
-```python
-async def compress_messages(...):
-    ...
-```
-
-这个 Node 调用 `compression.compress_context()`，再通过 Command 回到真实业务
-流程。压缩只能发生在消息历史完整的安全边界，不能切断 AI Tool Call 和对应的
-ToolMessage。
-
-## 14. Tool 和业务服务边界
+## 13. Tool 和业务服务边界
 
 `tools.py` 中的模型工具只负责参数入口和结果返回。权限、事务、幂等、业务数据库
 和外部 API 编排放在具体项目按需创建的 `services/` 中。Template 不预建空
@@ -368,7 +341,7 @@ ToolMessage。
 小 Graph 可以把节点函数和 Builder 都放在 `graph.py`。节点较多或文件明显难以
 连续阅读时，才在当前 Graph 目录按需创建 `nodes.py`，不能建立全局 Node 仓库。
 
-## 15. Streaming 和调试
+## 14. Streaming 和调试
 
 需要流式输出时，统一使用异步 Graph API，并同时观察 `messages` 和 `updates`；
 存在 Subgraph 时开启 `subgraphs=True`。调用仍固定使用 `durability="async"`。
@@ -384,18 +357,34 @@ graph.update_state(config, values)
 用于检查当前 State、历史 Checkpoint、修正 State 和从旧 Checkpoint 创建新执行
 分支。
 
-## 16. 本地 PostgreSQL
+## 15. 本地 PostgreSQL
 
-Template 提供 `compose.yaml`，统一使用 PostgreSQL 16、Healthcheck 和持久化
-Volume。Windows 本地开发运行：
+本机统一使用 `E:\PostgreSQL` 中独立运行的 PostgreSQL 16。生成的 Agent 项目只
+通过 `DATABASE_URL` 连接数据库，不能在项目中重复生成 `compose.yaml` 或管理
+PostgreSQL 容器生命周期。
+
+首次开发或电脑重启后，先确认统一数据库正在运行：
+
+```powershell
+cd E:\PostgreSQL
+docker compose up -d
+```
+
+目标项目的默认连接地址为：
+
+```text
+postgresql://langgraph:langgraph@localhost:5432/langgraph?sslmode=disable
+```
+
+然后在目标项目中运行：
 
 ```powershell
 .\scripts\setup.ps1
 ```
 
-脚本在 `.env` 不存在时复制 `.env.example`，检查 Docker，启动并等待 PostgreSQL，
-执行 `uv sync` 和 `agent-db-setup`。开始调用模型前仍需填写
-`DEEPSEEK_API_KEY`。
+脚本在 `.env` 不存在时复制 `.env.example`，执行 `uv sync`，并通过
+`agent-db-setup` 初始化 LangGraph Checkpoint 表。脚本不启动或停止数据库。
+开始调用模型前仍需填写 `DEEPSEEK_API_KEY`。
 
 `.gitignore` 排除 `.env`、虚拟环境、Python 缓存和 Agent Server 本地数据；
 `.editorconfig` 固定 UTF-8、LF、末尾换行和 Python 四空格缩进。
@@ -407,20 +396,21 @@ uv run ruff format .
 uv run ruff check .
 ```
 
-## 17. 生成目标项目
+## 16. 生成目标项目
 
 Codex 完成业务设计并获得用户确认后：
 
 1. 在用户指定的新目录创建项目；
-2. 复用 State、Configuration、默认 DeepSeek Models、Persistence、Compression
-   和本地 PostgreSQL 基础；
+2. 复用 State、Configuration、默认 DeepSeek Models 和 Persistence，并连接
+   `E:\PostgreSQL` 中统一运行的本地 PostgreSQL；
 3. 只创建业务实际使用的其他文件和 Subgraph；
 4. 没有明确换模要求时保留默认 DeepSeek 依赖；
 5. 生成真实 `.env.example`，但不写入生产密钥；
 6. 生成真实 `langgraph.json`，Graph ID 和导出路径必须对应源码；
 7. 确保目录层级、Graph 层级和节点命名一致。
+8. 不在目标项目中生成 PostgreSQL `compose.yaml`。
 
-## 18. 第一版明确不包含
+## 17. 第一版明确不包含
 
 - 具体业务逻辑；
 - 具体工具厂商；
