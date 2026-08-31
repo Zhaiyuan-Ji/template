@@ -8,14 +8,13 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class Configuration:
-    """提供所有目标项目一致的安全默认值。"""
+    """定义整棵 Graph 树共享的不可变运行参数。"""
 
     model_name: str = "deepseek-v4-flash"
     model_temperature: float = 0.0
     model_timeout_seconds: float = 60.0
     model_max_retries: int = 2
     recursion_limit: int = 100
-    max_retry_attempts: int = 3
 
     @classmethod
     def from_env(cls) -> "Configuration":
@@ -27,12 +26,11 @@ class Configuration:
         )
 
     def __post_init__(self) -> None:
-        """拒绝会让模型调用、循环或重试失去边界的配置。"""
+        """拒绝会让模型调用或 Graph 执行失去边界的配置。"""
         positive_values = {
             "model_timeout_seconds": self.model_timeout_seconds,
             "model_max_retries": self.model_max_retries,
             "recursion_limit": self.recursion_limit,
-            "max_retry_attempts": self.max_retry_attempts,
         }
         for name, value in positive_values.items():
             if value < 1:

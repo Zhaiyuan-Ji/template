@@ -1,11 +1,6 @@
-"""定义所有目标项目共享的最低 State 约定。"""
+"""定义根 Graph 唯一的主要 State。
 
-from langgraph.graph import MessagesState
-
-
-class State(MessagesState, total=False):
-    """保存 Thread 内消息。
-
-    具体项目在这个 State 中继续增加真实业务字段。State 只保存可序列化的原始
-    业务数据，不保存配置、密钥、连接对象、模型实例或格式化 Prompt。
-    """
+Coding Agent 必须根据业务选择 ``MessagesState`` 或 ``TypedDict``，不能默认假设
+所有 Agent 都是对话型。State 只保存跨节点传递或需要从 Checkpoint 恢复的可序列化
+业务数据；本空白模板不预设任何字段。
+"""

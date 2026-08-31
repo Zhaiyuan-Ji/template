@@ -10,12 +10,17 @@ if (-not (Test-Path -LiteralPath ".env")) {
 
 $DeepSeekKeyConfigured = Select-String -LiteralPath ".env" -Pattern "^DEEPSEEK_API_KEY=.+" -Quiet
 if (-not $DeepSeekKeyConfigured) {
-    Write-Warning ".env 尚未填写 DEEPSEEK_API_KEY；数据库可以初始化，但模型调用会失败。"
+    Write-Warning ".env 尚未填写 DEEPSEEK_API_KEY；模型调用会失败。"
 }
 
-$DatabaseUrlConfigured = Select-String -LiteralPath ".env" -Pattern "^DATABASE_URL=.+" -Quiet
-if (-not $DatabaseUrlConfigured) {
-    throw ".env 缺少 DATABASE_URL，无法初始化 PostgreSQL Checkpoint。"
+$PostgresUriConfigured = Select-String -LiteralPath ".env" -Pattern "^POSTGRES_URI=.+" -Quiet
+if (-not $PostgresUriConfigured) {
+    throw ".env 缺少 POSTGRES_URI。请填写当前 Agent 项目的独立 PostgreSQL 数据库地址。"
+}
+
+$PostgresUriPlaceholder = Select-String -LiteralPath ".env" -Pattern "<project_database>" -Quiet
+if ($PostgresUriPlaceholder) {
+    throw ".env 中的 POSTGRES_URI 仍包含 <project_database>，请替换为当前项目的独立数据库名。"
 }
 
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
@@ -27,9 +32,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "项目依赖安装失败。"
 }
 
-uv run agent-db-setup
-if ($LASTEXITCODE -ne 0) {
-    throw "LangGraph Checkpoint 数据库初始化失败。请根据上方错误检查 DATABASE_URL、数据库状态和连接权限。"
-}
-
-Write-Host "项目依赖和 PostgreSQL Checkpoint 初始化完成。"
+Write-Host "项目依赖安装完成。PostgreSQL 服务和项目数据库由外部统一管理。"
