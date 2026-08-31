@@ -1,20 +1,18 @@
-# LangGraph Agent Template
+# LangGraph Agent 项目规范
 
-## 1. 模板定位
+## 1. 使用方式
 
-这是供 Coding Agent 生成 LangGraph Agent 项目时遵守的固定工程规范。
+当前目录已经是完整复制后的项目骨架。`TEMPLATE.md` 是项目内永久保留的编码契约，
+Coding Agent 必须读取并遵守，不能修改或删除本文件。
 
-模板只规定最终项目的目录、文件职责、Graph 组织方式和运行边界，不包含具体业务，
-也不负责需求澄清、业务设计和方案确认。上述工作由独立 Skill 完成。
+根据已经确认的业务设计填写固定文件。不要重新发明同职责文件名，也不要把不同职责
+混入同一个文件。没有对应业务时，文件可以只保留现有中文模块说明，但不能写入假节点、
+假工具、占位 Prompt 或示例业务。
 
-空文件是结构约束：即使当前业务暂时不需要 Prompt、Schema 或 Tool，也必须保留对应
-文件，避免随意命名和职责混放。空文件只保留中文模块说明，不能填入虚假业务或示例
-实现。
-
-## 2. 固定项目结构
+固定结构：
 
 ```text
-<project>/
+.
 ├── TEMPLATE.md
 ├── pyproject.toml
 ├── langgraph.json
@@ -23,7 +21,8 @@
 ├── .gitignore
 ├── .editorconfig
 ├── scripts/
-│   └── setup.ps1
+│   ├── setup.ps1
+│   └── dev.ps1
 └── src/agent/
     ├── __init__.py
     ├── graph.py
@@ -35,13 +34,11 @@
     └── tools.py
 ```
 
-`SKILL_REQUIREMENTS.md` 是模板仓库中用于设计未来 Skill 的辅助文档，不复制到生成后
-的 Agent 项目中。
-
-只有业务确实需要独立 Subgraph 时，才在 `src/agent/` 下创建与业务节点同名的目录：
+只有业务流程内部仍包含多个步骤、循环或独立 State 时，才创建 Subgraph：
 
 ```text
-src/agent/<business>/
+src/agent/research/
+├── __init__.py
 ├── graph.py
 ├── state.py
 ├── schemas.py
@@ -49,243 +46,442 @@ src/agent/<business>/
 └── tools.py
 ```
 
-Subgraph 共用根目录的 `configuration.py` 和 `models.py`，不重复定义通用配置与模型
-工厂。模板不创建 `nodes.py`、`services.py`、`contracts.py`、`docs/`、`tests/`、
-`README.md` 或 `AGENTS.md`。
+Subgraph 共享根目录的 `configuration.py` 和 `models.py`。不要默认创建 `nodes.py`、
+`services.py`、`contracts.py`、`docs/`、`tests/`、`README.md` 或 `AGENTS.md`。
 
-## 3. 文件职责
+## 2. 固定文件的填写边界
 
-### `graph.py`
+| 文件 | 只负责什么 |
+| --- | --- |
+| `schemas.py` | Graph 对外输入、对外输出、模型结构化返回 |
+| `state.py` | 当前 Graph 在节点之间传递和持久化的数据 |
+| `configuration.py` | 不随 Graph 执行变化的 Runtime Context 和默认运行常量 |
+| `models.py` | 根据 Configuration 创建模型 |
+| `prompts.py` | 当前 Graph 实际调用模型时使用的 Prompt |
+| `tools.py` | 当前 Graph 暴露给模型的 Tool 和工具列表 |
+| `graph.py` | Node 函数、Graph 拓扑、Subgraph 挂载和最终导出 |
+| `pyproject.toml` | 当前项目名称和真实使用的 Python 依赖 |
+| `langgraph.json` | 正式运行时对外根图的注册信息 |
+| `langgraph.dev.json` | 本地 Studio 使用的根图和全部 Subgraph 注册信息 |
+| `.env.example` | 环境变量名称、非敏感默认值和当前项目的独立数据库名 |
+| `scripts/*.ps1` | 固定的依赖安装和 Agent Server 启动流程 |
 
-定义当前 Graph 的节点函数、Builder、Edge、Command、Send、ToolNode 和 Subgraph
-挂载。节点函数写在构建函数外，Builder 只存在于构建函数内。
+`configuration.py`、`models.py` 和 `scripts/*.ps1` 已包含通用实现，没有真实需求时不
+重写。Coding Agent 必须把 `pyproject.toml` 的项目名、`.env.example` 的数据库名和
+两个 LangGraph 配置文件更新为当前业务的真实值；不能把 API Key 写入项目文件。
 
-根 Graph 统一使用：
+项目的数据流必须保持为：
+
+```text
+GraphInput
+→ State
+→ Node 读取 State 和 Runtime Context
+→ Node 返回 State 更新或 Command
+→ GraphOutput
+```
+
+配置流必须保持为：
+
+```text
+Run Context 或环境默认值
+→ get_configuration(runtime)
+→ Configuration
+→ create_model(configuration)
+```
+
+## 3. Schema 与 State
+
+每张 Graph 只定义一个主要 `State`。`GraphInput` 和 `GraphOutput` 是公开边界，
+`State` 是内部完整数据。公开 Schema 的字段必须能在 State 中找到，但内部字段不能
+自动暴露给调用方。
+
+`schemas.py` 的最小模式：
 
 ```python
-def build_graph(): ...
+from typing_extensions import TypedDict
+
+
+class GraphInput(TypedDict):
+    request: str
+
+
+class GraphOutput(TypedDict):
+    result: str
+```
+
+模型结构化输出使用 Pydantic 类型，仍然放在 `schemas.py`：
+
+```python
+from pydantic import BaseModel, Field
+
+
+class ActionDecision(BaseModel):
+    requires_action: bool = Field(description="是否需要执行下一项业务动作")
+    reason: str = Field(description="作出判断的原因")
+```
+
+`state.py` 的结构化工作流模式：
+
+```python
+import operator
+from typing import Annotated
+
+from typing_extensions import TypedDict
+
+
+class State(TypedDict, total=False):
+    request: str
+    result: str
+    pending_items: list[str]
+    completed_items: Annotated[list[str], operator.add]
+```
+
+对话型 Graph 才使用 `MessagesState`。State 只保存跨节点传递或需要从 Checkpoint
+恢复的可序列化业务数据。配置、密钥、模型、连接对象、格式化后的 Prompt 和局部变量
+不能进入 State。
+
+并行节点共同写入同一字段时必须声明 Reducer。Reducer 必须表达真实合并语义，不能
+为了消除并发报错而随意使用列表相加。
+
+## 4. Configuration、Runtime 与 Model
+
+`configuration.py` 已提供 `Configuration`、`get_configuration()` 和
+`DEFAULT_RECURSION_LIMIT`。Node 必须通过统一入口取得运行上下文：
+
+```python
+from langgraph.runtime import Runtime
+
+from agent.configuration import Configuration, get_configuration
+from agent.models import create_model
+from agent.state import State
+
+
+async def generate_response(
+    state: State,
+    runtime: Runtime[Configuration],
+) -> dict:
+    configuration = get_configuration(runtime)
+    model = create_model(configuration)
+    response = await model.ainvoke(state["request"])
+    return {"result": str(response.content)}
+```
+
+显式传入的 Run Context 优先；没有 Context 时，`get_configuration()` 才读取环境默认
+值。Node 不能自行读取 `MODEL_NAME`，也不能直接实例化 `ChatDeepSeek`。
+
+`recursion_limit` 不是 Runtime Context。创建 Agent Server Run 时分别传递 Context、
+Run Config 和 durability：
+
+```json
+{
+  "context": {
+    "model_name": "deepseek-v4-flash"
+  },
+  "config": {
+    "recursion_limit": 100
+  },
+  "durability": "async"
+}
+```
+
+## 5. 构建 Graph 与普通 Edge
+
+Node 函数写在构建函数外，Builder 只存在于构建函数内。函数名必须表达业务行为，
+注册名称必须与函数名完全一致。
+
+根 Graph 使用 `build_graph()` 并导出 `graph`：
+
+```python
+from langgraph.graph import END, START, StateGraph
+
+from agent.configuration import Configuration
+from agent.schemas import GraphInput, GraphOutput
+from agent.state import State
+
+
+async def analyze_request(state: State) -> dict:
+    return {"result": state["request"]}
+
+
+def build_graph():
+    graph_builder = StateGraph(
+        State,
+        input_schema=GraphInput,
+        output_schema=GraphOutput,
+        context_schema=Configuration,
+    )
+    graph_builder.add_node("analyze_request", analyze_request)
+    graph_builder.add_edge(START, "analyze_request")
+    graph_builder.add_edge("analyze_request", END)
+    return graph_builder.compile()
 
 
 graph = build_graph()
 ```
 
-Subgraph 统一使用：
+固定且无条件的下一步使用普通 Edge。只有包含 I/O 的 Node 必须使用 `async def`；
+纯计算 Node 可以使用普通 `def`。所有模型、网络、数据库和文件 I/O 必须使用异步接口，
+同步阻塞接口只能通过 `asyncio.to_thread()` 隔离。
+
+## 6. 类型化 Command
+
+同一个 Node 既更新 State 又动态选择下一步时返回 Command：
 
 ```python
-def build_<business>_graph():
+from typing import Literal
+
+from langgraph.types import Command
+
+from agent.state import State
+
+
+async def choose_action(
+    state: State,
+) -> Command[Literal["execute_action", "generate_response"]]:
+    if state.get("pending_items"):
+        return Command(
+            update={"result": "准备执行业务动作"},
+            goto="execute_action",
+        )
+    return Command(
+        update={"result": "不需要执行业务动作"},
+        goto="generate_response",
+    )
+```
+
+`Literal` 必须列出全部目的地，字符串必须与 `add_node()` 注册名称一致。返回 Command
+的 Node 不能再添加静态出边，否则两条路线都会执行。
+
+本项目不使用 Conditional Edge。固定路线使用 Edge，动态路线由作出决策的 Node
+直接返回类型化 Command。
+
+## 7. ToolNode 工具循环
+
+标准模型工具调用必须使用 `ToolNode`，不能手工执行 `tool_calls`。
+
+`tools.py` 定义 Tool 和统一工具列表：
+
+```python
+from langchain_core.tools import tool
+
+
+@tool
+async def search_information(query: str) -> str:
+    """根据查询词获取当前业务需要的信息。"""
     ...
 
 
-<business>_graph = build_<business>_graph()
+TOOLS = [search_information]
 ```
 
-构建函数内部使用当前 Graph 的 `State`、`GraphInput`、`GraphOutput` 和共享的
-`Configuration`：
+模型 Node 负责决定调用工具还是结束：
 
 ```python
-graph_builder = StateGraph(
-    State,
-    input_schema=GraphInput,
-    output_schema=GraphOutput,
-    context_schema=Configuration,
-)
+from typing import Literal
+
+from langgraph.graph import END
+from langgraph.prebuilt import ToolNode
+from langgraph.runtime import Runtime
+from langgraph.types import Command
+
+from agent.configuration import Configuration, get_configuration
+from agent.models import create_model
+from agent.state import State
+from agent.tools import TOOLS
+
+
+async def call_model(
+    state: State,
+    runtime: Runtime[Configuration],
+) -> Command[Literal["tools", "__end__"]]:
+    configuration = get_configuration(runtime)
+    model = create_model(configuration).bind_tools(TOOLS)
+    response = await model.ainvoke(state["messages"])
+    if response.tool_calls:
+        return Command(update={"messages": [response]}, goto="tools")
+    return Command(update={"messages": [response]}, goto=END)
 ```
 
-最终只调用 `graph_builder.compile()`，不能在源码中创建或传入 Checkpointer。
 
-### `state.py`
-
-每张 Graph 对应一个 `state.py`，其中只定义一个主要 `State`，供这一层 Graph 的
-全部节点传递运行时数据。
-
-- 对话型 Agent 可以继承 `MessagesState`；
-- 结构化工作流使用符合业务字段的 `TypedDict`；
-- 不允许无条件默认使用 `MessagesState`；
-- 不为每个节点分别定义 State；
-- 并行节点写入同一字段时必须声明符合业务语义的 Reducer。
-
-State 只保存需要跨节点传递或从 Checkpoint 恢复的可序列化业务数据。模型配置、
-API Key、数据库连接、HTTP Client、文件句柄、格式化后的 Prompt 和一次调用内的
-局部变量不能进入 State。
-
-### `schemas.py`
-
-定义当前 Graph 的公开输入 `GraphInput`、公开输出 `GraphOutput`，以及模型必须
-遵守的结构化输出类型。
-
-节点之间依然通过 `State` 传递数据。Schema 负责限制 Graph 边界和模型单次返回
-格式，不能代替 State。
-
-### `configuration.py`
-
-定义整棵 Graph 树共享的 `Configuration`。它作为 `StateGraph` 的
-`context_schema`，节点通过 `Runtime[Configuration]` 读取不可变运行参数：
+ToolNode 在 `build_graph()` 内注册，并通过普通 Edge 返回模型 Node：
 
 ```python
-async def call_model(state: State, runtime: Runtime[Configuration]):
-    configuration = runtime.context
+graph_builder.add_node("call_model", call_model)
+graph_builder.add_node("tools", ToolNode(TOOLS))
+graph_builder.add_edge("tools", "call_model")
 ```
 
-`recursion_limit` 继续保存在 `configuration.py` 中作为默认运行配置，但它不是
-State 字段。创建 Agent Server Run 时，调用方必须把该值放在 Run 的顶层
-`config.recursion_limit` 中；仅把它放进 Runtime Context 不会限制 Graph 执行。
+使用这套模式时，当前 State 必须提供采用 `add_messages` Reducer 的 `messages` 字段。
+`call_model` 由 Command 路由，不能再为它添加静态出边。
 
-API Key、PostgreSQL URI 等秘密只存在于环境变量中，不能进入 Configuration。
+## 8. Send 动态并行
 
-### `models.py`
-
-集中创建默认 DeepSeek 模型，对其他模块只暴露 `BaseChatModel`。Graph、State 和
-Node 不能直接实例化 `ChatDeepSeek`。默认模型为 `deepseek-v4-flash`；以后更换
-Provider 时由开发者修改本文件和依赖，Coding Agent 不自动检查兼容性。
-
-### `prompts.py`
-
-只保存当前 Graph 实际使用的 Prompt。Prompt 说明模型任务，结构化返回格式由
-`schemas.py` 定义。没有 Prompt 时保留文件和中文模块说明，不创建占位常量。
-
-### `tools.py`
-
-只保存当前 Graph 实际使用的模型工具，文件名固定为复数 `tools.py`。标准工具调用
-优先交给 `ToolNode` 执行并回写 `ToolMessage`。只有权限、事务、审计、服务端参数
-注入或特殊错误处理确实存在时，才实现自定义工具节点。
-
-## 4. Node 与 Graph 命名
-
-普通函数节点的注册名称必须与函数名称完全一致：
+运行时才知道任务数量时，返回包含多个 `Send` 的 Command。每个 Send 只携带 Worker
+真正需要的输入：
 
 ```python
-async def clarify_with_user(...):
-    ...
+from typing import Literal
+
+from langgraph.types import Command, Send
+
+from agent.state import State
 
 
-graph_builder.add_node("clarify_with_user", clarify_with_user)
+async def dispatch_items(
+    state: State,
+) -> Command[Literal["process_item"]]:
+    tasks = [Send("process_item", {"item": item}) for item in state["pending_items"]]
+    return Command(goto=tasks)
+
+
+async def process_item(state: dict) -> dict:
+    item = str(state["item"])
+    return {"completed_items": [item]}
 ```
 
-函数名必须直接描述业务行为，例如 `write_research_brief`、
-`execute_research_tools`、`generate_final_report`。禁止使用 `node_a`、`step_1`、
-`process`、`handler`、`run_task` 等无法表达业务含义的名称。
+注册时，`dispatch_items` 不添加静态出边；每个 `process_item` 通过普通 Edge 进入同一个
+汇总节点。`completed_items` 必须在 State 中声明对应 Reducer。
 
-Subgraph 节点名、目录名和导出变量必须保持对应：
+## 9. Subgraph
+
+Subgraph 的目录名、父图 Node 名和导出变量保持对应：
 
 ```text
-节点名：research
-目录名：research/
+父图 Node：research
+目录：src/agent/research/
+构建函数：build_research_graph()
 导出变量：research_graph
 ```
 
-## 5. 控制流规则
-
-| 业务含义 | LangGraph 结构 |
-| --- | --- |
-| 固定且无条件的下一步 | 普通 Edge |
-| 节点更新 State 后动态选择下一步 | 类型化 Command |
-| 运行时动态生成多个并行任务 | Send |
-| 标准模型工具调用 | ToolNode |
-| 拥有独立 State 的多步骤流程 | Subgraph |
-| 暂停并等待人工输入或审批 | `interrupt()` 与 `Command(resume=...)` |
-
-模板不使用 Conditional Edge。固定路线不能滥用 Command；动态路线也不能额外创建
-只负责路由的临时 State 字段。
-
-返回 Command 的节点必须通过 `Literal` 声明全部可能目的地，保证 Graph 可被 Studio
-正确渲染：
+子图使用自己的 `State`、`GraphInput` 和 `GraphOutput`。父子 State 不同时，父图通过
+业务 Node 显式转换输入输出：
 
 ```python
-async def route_request(...) -> Command[Literal["use_tools", "finish"]]:
-    ...
+from agent.research.graph import research_graph
+from agent.state import State
+
+
+async def research(state: State) -> dict:
+    child_input = {"topic": state["request"]}
+    child_output = await research_graph.ainvoke(child_input)
+    return {"result": child_output["summary"]}
 ```
 
-目的地名称必须与 `add_node()` 注册名称一致。一个由 Command 路由的节点不能再添加
-静态出边，否则两条路线都会执行。Subgraph 跳回父图时按需使用 `Command.PARENT`。
+```python
+graph_builder.add_node("research", research)
+```
 
-## 6. Subgraph 与并行
+只有父子 Graph 共享同一套 State 字段时，才把编译后的 Subgraph 直接注册为 Node。
+不要为了拆文件创建只有一个步骤的 Subgraph；一次性并行任务优先使用 Send。
 
-一次性、单步骤并行任务使用 `Send` 到普通节点。只有内部仍包含多个步骤、循环、
-独立消息历史或独立 State 时，才拆成 Subgraph。
+## 10. Interrupt 与恢复
 
-每张 Subgraph 只向父图暴露明确的 `GraphInput` 和 `GraphOutput`。父图负责调度，
-Subgraph 负责自己的内部流程；不能为了拆文件而制造额外 Graph 层级。
+需要人工补充信息或审批时，在作出决定的 Node 中调用 `interrupt()`：
 
-## 7. 异步边界
+```python
+from typing import Literal
 
-- Graph 构建函数使用普通 `def`；
-- Node、Tool、模型调用、网络、数据库和文件 I/O 使用 `async def`；
-- 模型统一使用 `ainvoke()` 或 `astream()`；
-- HTTP 调用使用异步客户端；
-- `async def` 中禁止直接调用 `requests`、`time.sleep()` 等阻塞接口；
-- 无法替换的同步接口通过 `asyncio.to_thread()` 隔离。
+from langgraph.types import Command, interrupt
 
-未知异常直接抛出，不能使用宽泛捕获隐藏。网络和只读模型调用可以使用
-`RetryPolicy`；有外部副作用的节点只有完成业务幂等后才能重试。
+from agent.state import State
 
-## 8. Thread 短期记忆与 Agent Server
 
-本模板只提供单个 Thread 内的短期记忆，不提供 Store、跨 Thread 记忆、State
-加密、InMemorySaver、SQLiteSaver 或自定义 Checkpointer。
+async def request_approval(
+    state: State,
+) -> Command[Literal["publish_result", "revise_result"]]:
+    decision = interrupt({"result": state["result"]})
+    approved = bool(decision["approved"])
+    return Command(
+        update={"approved": approved},
+        goto="publish_result" if approved else "revise_result",
+    )
+```
 
-Agent Server 是唯一默认运行入口。Server 负责 Thread、Run 和 PostgreSQL
-Checkpoint 生命周期，Graph 源码只导出编译后的 Graph。
+恢复时向同一 Thread 的下一次 Run 发送：
 
-需要人工交互时调用 `interrupt()`，并在同一个 Thread 中使用
-`Command(resume=...)` 恢复。`interrupt()` 之前不能执行不可重复的外部副作用，
-因为恢复时节点会从开头重新执行。
+```json
+{
+  "command": {
+    "resume": {
+      "approved": true
+    }
+  }
+}
+```
 
-每个业务循环必须在 State 中保存业务计数和完成状态；`recursion_limit` 只是防止
-Graph 无限执行的最后保护。Agent Server 调用方还必须统一使用异步运行方式，并将
-durability 设为 `async`。
+Node 恢复时会从开头重新执行，因此 `interrupt()` 之前不能执行不可重复的外部副作用。
+付款、发信、删除和业务写入必须放在审批后的独立幂等 Node 中。
 
-## 9. PostgreSQL 约定
+## 11. LangGraph 配置
 
-本机统一使用 `E:\PostgreSQL` 中运行的 PostgreSQL 16，不在 Agent 项目中生成
-`compose.yaml`，也不由 Agent 项目启动、停止或迁移 PostgreSQL 服务。
+空白骨架没有业务 Graph，因此两个配置文件中的 `graphs` 保持为空。填写根 Graph 后，
+`langgraph.json` 只声明对外根图：
 
-一个 PostgreSQL 服务可以供多个 Agent 项目使用，但每个 Agent 项目或部署必须使用
-独立数据库。数据库名由稳定的项目名生成，只使用小写字母、数字和下划线。
+```json
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./src/agent/graph.py:graph"
+  },
+  "env": ".env",
+  "image_distro": "wolfi"
+}
+```
 
-Agent Server 运行在 Docker 中，因此 PostgreSQL URI 必须使用
-`host.docker.internal`，不能使用 `localhost`：
+`langgraph.dev.json` 声明根图和全部需要在 Studio 单独查看的 Subgraph：
+
+```json
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./src/agent/graph.py:graph",
+    "research": "./src/agent/research/graph.py:research_graph"
+  },
+  "env": ".env",
+  "image_distro": "wolfi"
+}
+```
+
+Graph 源码只调用 `compile()`。Agent Server 负责 PostgreSQL Checkpointer、Thread、Run
+和 Checkpoint 生命周期，源码中不能创建 Checkpointer。
+
+## 12. 本地运行
+
+默认使用 `E:\PostgreSQL` 中统一运行的 PostgreSQL。每个 Agent 项目必须使用独立
+数据库，数据库名只包含小写字母、数字和下划线。Agent Server 在 Docker 中运行，
+因此 `.env` 中的地址必须使用：
 
 ```text
-postgresql://langgraph:langgraph@host.docker.internal:5432/<project_database>?sslmode=disable
+POSTGRES_URI=postgresql://langgraph:langgraph@host.docker.internal:5432/<project_database>?sslmode=disable
 ```
 
-数据库必须在启动 Agent Server 前由外部流程创建。模板不包含数据库创建脚本和
-Checkpoint 表迁移脚本；这些由 Agent Server 管理。
-
-## 10. LangGraph 配置与启动
-
-`langgraph.json` 是正式配置，只声明对外使用的根 Graph。`langgraph.dev.json` 是
-本地 Studio 调试配置，声明根 Graph 和全部 Subgraph。两个文件中的 Graph ID、
-模块路径和导出变量必须与源码一致。
-
-准备依赖：
+先安装依赖：
 
 ```powershell
 .\scripts\setup.ps1
 ```
 
-本地默认使用真实 PostgreSQL 启动 Agent Server：
+填写 `DEEPSEEK_API_KEY`、`MODEL_NAME` 和独立数据库名，并保证统一 PostgreSQL 与
+Docker 已启动。然后运行：
 
 ```powershell
-$PostgresUri = (Get-Content .env | Select-String "^POSTGRES_URI=").Line `
-  -replace "^POSTGRES_URI=", ""
-
-uv run langgraph up -c langgraph.dev.json `
-  --postgres-uri $PostgresUri `
-  --watch `
-  --wait
+.\scripts\dev.ps1
 ```
 
-正式运行改用 `langgraph.json` 并移除 `--watch`。模板不使用 `langgraph dev`，也不
-提供直接调用编译 Graph 的第二套运行方式。
+`dev.ps1` 读取 `.env` 并使用 `langgraph.dev.json` 启动 Agent Server。项目不使用
+`langgraph dev`，不提供直接调用 Graph、手动 Checkpointer、Store、跨 Thread 记忆、
+上下文压缩、State 加密或 LangChain `create_agent()`。
 
-## 11. 第一版明确不包含
+## 13. Coding Agent 完成条件
 
-- 具体业务、虚假节点、假工具和占位 Prompt；
-- Conditional Edge；
-- LangChain `create_agent()`、Middleware 和 Deep Agents；
-- 手动 Checkpointer、直接运行模式和数据库迁移代码；
-- 上下文压缩、跨 Thread 长期记忆和 State 加密；
-- 鉴权、队列、限流、监控和业务数据库实现；
-- 通用基类、抽象 Graph、插件注册中心和代码生成引擎；
-- 测试目录与测试规范。
+填写业务代码后必须确认：
+
+- 输入、State 和输出字段能够形成完整数据流；
+- Node 函数名、注册名、Command 目的地和 Subgraph 目录互相一致；
+- 固定路线使用 Edge，动态路线使用类型化 Command；
+- 标准工具调用使用 ToolNode，并行写入字段具有正确 Reducer；
+- 根图和子图导出名称与两个 LangGraph 配置文件一致；
+- 没有虚假业务、未使用配置、手写 Checkpointer 和计划外同职责文件；
+- `uv run ruff format .` 与 `uv run ruff check .` 执行通过。

@@ -15,12 +15,12 @@ if (-not $DeepSeekKeyConfigured) {
 
 $PostgresUriConfigured = Select-String -LiteralPath ".env" -Pattern "^POSTGRES_URI=.+" -Quiet
 if (-not $PostgresUriConfigured) {
-    throw ".env 缺少 POSTGRES_URI。请填写当前 Agent 项目的独立 PostgreSQL 数据库地址。"
+    Write-Warning ".env 尚未填写 POSTGRES_URI；安装可以继续，但 Agent Server 无法启动。"
 }
 
 $PostgresUriPlaceholder = Select-String -LiteralPath ".env" -Pattern "<project_database>" -Quiet
 if ($PostgresUriPlaceholder) {
-    throw ".env 中的 POSTGRES_URI 仍包含 <project_database>，请替换为当前项目的独立数据库名。"
+    Write-Warning ".env 中的 POSTGRES_URI 仍包含 <project_database>；启动前必须替换为独立数据库名。"
 }
 
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
@@ -32,4 +32,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "项目依赖安装失败。"
 }
 
-Write-Host "项目依赖安装完成。PostgreSQL 服务和项目数据库由外部统一管理。"
+Write-Host "项目依赖安装完成。填写 .env 后可运行 scripts/dev.ps1 启动 Agent Server。"
